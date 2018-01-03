@@ -149,6 +149,9 @@ Param (
 	$SharePointUsername,
 	
 	[switch]
+	$ShowAllServices,
+	
+	[switch]
 	$UploadWiki,
 	
 	[string]
@@ -334,7 +337,7 @@ function itemHeading ($title) {
 		write-host $underline -foregroundcolor cyan
 	}
 	if ($OutputText) {
-		$textstream.writeline($title)
+		$textstream.writeline("$title")
 		$textstream.writeline($underline)
 	}
 	if ($OutputWiki){
@@ -571,15 +574,13 @@ If ($OutputWikiIndex) {
 			}
 			
 			# System Information
-			if ($IncludeSystem) {
-				speak "...Gathering basic system information..." $false
-				$computerInfo = get-wmiobject win32_computersystem -computername $ComputerName | select name, domain, manufacturer, model, description, dnshostname, partofdomain, numberofprocessors, workgroup
-				$cpuInfo = get-wmiobject win32_processor -computername $ComputerName | select name, description, datawidth
-				$osInfo = get-wmiobject win32_operatingsystem -computername $ComputerName | select caption, OSArchitecture
-				$osType = $osinfo.OSArchitecture
-				$physicalMemory = Get-WmiObject win32_physicalmemory -computername $ComputerName | Measure-Object capacity -sum | select @{N="memory"; E={[math]::round(($_.Sum / 1GB),2)}}
-				$physicalMemory = $physicalMemory.memory
-			}
+			speak "...Gathering basic system information..."
+			$computerInfo = get-wmiobject win32_computersystem -computername $ComputerName | select name, domain, manufacturer, model, description, dnshostname, partofdomain, numberofprocessors, workgroup
+			$cpuInfo = get-wmiobject win32_processor -computername $ComputerName | select name, description, datawidth
+			$osInfo = get-wmiobject win32_operatingsystem -computername $ComputerName | select caption, OSArchitecture
+			$osType = $osinfo.OSArchitecture
+			$physicalMemory = Get-WmiObject win32_physicalmemory -computername $ComputerName | Measure-Object capacity -sum | select @{N="memory"; E={[math]::round(($_.Sum / 1GB),2)}}
+			$physicalMemory = $physicalMemory.memory
 			
 			# Networking information
 			if ($IncludeNetwork) {
@@ -591,13 +592,13 @@ If ($OutputWikiIndex) {
 			
 			# Find all fixed local volumes and optical drives
 			If ($IncludeStorage) {
-				speak "...Gathering local storage volumes..." $false
+				speak "...Gathering local storage volumes..."
 				$StorageVolumes = Get-WMIOBJECT win32_volume -computername $ComputerName | where { $_.DriveType -eq 3 -or $_.DriveType -eq 5 -and $_.Label -ne "System Reserved"} | sort-object { $_.Name }
 			}
 			
 			# Shared folders
 			if ($IncludeShares) {
-			speak "...Gathering shared folders..." $false
+			speak "...Gathering shared folders..."
 			$sharedfolders = get-WmiObject -class Win32_Share -computer $ComputerName |
 				where {$_.name -inotmatch '^[A-Z]\$$' `
 				-and $_.name -inotmatch '^ADMIN\$$' `
@@ -607,50 +608,56 @@ If ($OutputWikiIndex) {
 			
 			# Local users
 			If ($IncludeUsers) {
-				speak "...Gathering local users..." $false
+				speak "...Gathering local users..."
 				$ComputerADSI = [ADSI]"WinNT://$ComputerName,computer" 
 				$userlist = $ComputerADSI.psbase.Children | Where-Object { $_.psbase.schemaclassname -eq 'user' }
 				$ComputerADSI = ""
 			}
 			
 			# Roles and features
-			if (get-wmiobject win32_operatingsystem -ComputerName $ComputerName | where {$_.Name -match "Server"}){
-				if ($IncludeRoles){
-					Import-Module ServerManager
-					speak "...Gathering server roles..." $false
-					$Roles = get-windowsfeature -computername $ComputerName | where-object {$_.Installed -match "True" -and $_.FeatureType -match "Role" `
-						-and $_.Name -notmatch "FileAndStorage-Services" `
-						-and $_.Name -notmatch "Storage-Services" `
-						-and $_.name -notmatch "File-Services" `
-					} | select name, displayname, description, systemservice | sort-object {$_.name}
+			if ($osInfo.caption -Like "*Server 2012*" `
+				-or $osInfo.caption -Like "*Server 2016*" `
+				-or $osInfo.caption -Like "*Windows 8*" `
+				-or $osInfo.caption -Like "*Windows 10*" ) `
+			{	
+				if (get-wmiobject win32_operatingsystem -ComputerName $ComputerName | where {$_.Name -match "Server"}){
+					if ($IncludeRoles){
+						Import-Module ServerManager
+						speak "...Gathering server roles..."
+						$Roles = get-windowsfeature -computername $ComputerName | where-object {$_.Installed -match "True" -and $_.FeatureType -match "Role" `
+							-and $_.Name -notmatch "FileAndStorage-Services" `
+							-and $_.Name -notmatch "Storage-Services" `
+							-and $_.name -notmatch "File-Services" `
+						} | select name, displayname, description, systemservice | sort-object {$_.name}
+					}
+					if ($IncludeFeatures) {
+						speak "...Gathering server features..."
+						$Features = get-WindowsFeature -computername $ComputerName |
+							where-object {$_.Installed -match "True" `
+							-and $_.FeatureType -match "Feature" `
+							-and $_.Name -notmatch "RDC" `
+							-and $_.Name -notmatch "RSAT" `
+							-and $_.Name -notmatch "RSAT-Role-Tools" `
+							-and $_.Name -notmatch "FS-FileServer" `
+							-and $_.Name -notmatch "FS-SMB1" `
+							-and $_.Name -notmatch "User-Interfaces-Infra" `
+							-and $_.Name -notmatch "Server-Gui-Mgmt-Infra" `
+							-and $_.Name -notmatch "Server-Gui-Shell" `
+							-and $_.Name -notmatch "PowerShellRoot" `
+							-and $_.Name -notmatch "PowerShell" `
+							-and $_.Name -notmatch "PowerShell-V2" `
+							-and $_.Name -notmatch "PowerShell-ISE" `
+							-and $_.Name -notmatch "WoW64-Support" `
+						} | select name, displayname, description | sort-object {$_.name}
+							# Not sure if to exclude .net 4 stuff as it is installed as default on our server image
+							# -and $_.Name -notmatch "NET-Framework-45-Features" `
+							# -and $_.Name -notmatch "NET-Framework-45-Core" `
+							# -and $_.Name -notmatch "NET-Framework-45-ASPNET" `
+							# -and $_.Name -notmatch "NET-WCF-Services45" `
+							# -and $_.Name -notmatch "NET-WCF-TCP-PortSharing45" `
+					}
 				}
-				if ($IncludeFeatures) {
-					speak "...Gathering server features..." $false 
-					$Features = get-WindowsFeature -computername $ComputerName |
-						where-object {$_.Installed -match "True" `
-						-and $_.FeatureType -match "Feature" `
-						-and $_.Name -notmatch "RDC" `
-						-and $_.Name -notmatch "RSAT" `
-						-and $_.Name -notmatch "RSAT-Role-Tools" `
-						-and $_.Name -notmatch "FS-FileServer" `
-						-and $_.Name -notmatch "FS-SMB1" `
-						-and $_.Name -notmatch "User-Interfaces-Infra" `
-						-and $_.Name -notmatch "Server-Gui-Mgmt-Infra" `
-						-and $_.Name -notmatch "Server-Gui-Shell" `
-						-and $_.Name -notmatch "PowerShellRoot" `
-						-and $_.Name -notmatch "PowerShell" `
-						-and $_.Name -notmatch "PowerShell-V2" `
-						-and $_.Name -notmatch "PowerShell-ISE" `
-						-and $_.Name -notmatch "WoW64-Support" `
-					} | select name, displayname, description | sort-object {$_.name}
-						# Not sure if to exclude .net 4 stuff as it is installed as default on our server image
-						# -and $_.Name -notmatch "NET-Framework-45-Features" `
-						# -and $_.Name -notmatch "NET-Framework-45-Core" `
-						# -and $_.Name -notmatch "NET-Framework-45-ASPNET" `
-						# -and $_.Name -notmatch "NET-WCF-Services45" `
-						# -and $_.Name -notmatch "NET-WCF-TCP-PortSharing45" `
-				}
-			}
+			} Else { $NoRoleOrFeatureInfo = $True }
 
 			# Installed software
 			if ($IncludeSoftware) {
@@ -669,7 +676,7 @@ If ($OutputWikiIndex) {
 				#>	
 				
 				# Installed software (new version, works with remote computers, but is a bit clunky )
-				speak "...Gathering installed software..." $false 
+				speak "...Gathering installed software..."
 				$Reg = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey('LocalMachine', $ComputerName)
 				$regKey = $Reg.openSubKey("SOFTWARE\\Microsoft\Windows\CurrentVersion\Uninstall")
 				$subkeys = $regkey.getsubkeynames()
@@ -709,23 +716,27 @@ If ($OutputWikiIndex) {
 			# Services
 			If ($IncludeServices) {
 				speak "...Gathering services..."
-				$Services = Get-wmiobject win32_service -computername $ComputerName | 
-					where { ($_.Caption -notmatch "Windows" `
-					-and $_.PathName -notmatch "Windows" `
-					-and $_.PathName -notmatch "policyhost.exe" `
-					-and $_.Name -ne "LSM" `
-					-and $_.PathName -notmatch "OSE.EXE" `
-					-and $_.PathName -notmatch "OSPPSVC.EXE" `
-					-and $_.PathName -notmatch "Microsoft Security Client") `
-					-or $_.Caption -match "DFS Namespace" `
-					-or $_.Caption -match "DFS Replication" `
-					-or $_.Caption -match "DHCP Server" `
-					-or ($_.Displayname -match "Hyper-V" -and $_.State -match "Running")`
-					-or $Caption -match "IIS Admin Service" `
-					-or $_.Caption -match "Network Policy Server" `
-					-or $_.Caption -match "Windows Internal Database" `
-					-or $_.Caption -match "World Wide Web Publishing Service" `
-					} | sort-object {$_.displayname}
+				If ($ShowAllServices ) {
+					$Services = Get-wmiobject win32_service -computername $ComputerName | sort-object {$_.displayname}
+				} Else {
+					$Services = Get-wmiobject win32_service -computername $ComputerName | 
+						where { ($_.Caption -notmatch "Windows" `
+						-and $_.PathName -notmatch "Windows" `
+						-and $_.PathName -notmatch "policyhost.exe" `
+						-and $_.Name -ne "LSM" `
+						-and $_.PathName -notmatch "OSE.EXE" `
+						-and $_.PathName -notmatch "OSPPSVC.EXE" `
+						-and $_.PathName -notmatch "Microsoft Security Client") `
+						-or $_.Caption -match "DFS Namespace" `
+						-or $_.Caption -match "DFS Replication" `
+						-or $_.Caption -match "DHCP Server" `
+						-or ($_.Displayname -match "Hyper-V" -and $_.State -match "Running")`
+						-or $Caption -match "IIS Admin Service" `
+						-or $_.Caption -match "Network Policy Server" `
+						-or $_.Caption -match "Windows Internal Database" `
+						-or $_.Caption -match "World Wide Web Publishing Service" `
+						} | sort-object {$_.displayname}
+				}
 			}
 			
 			# Processes
@@ -785,16 +796,17 @@ If ($OutputWikiIndex) {
 			
 			if ($IncludeTasks) {
 				# Scheduled tasks
-				speak "...Gathering scheduled tasks..." $false 
+				speak "...Gathering scheduled tasks..."
 				#Get all scheduled tasks on the system in a Csv format
 				$Tasks = schtasks /query /s $ComputerName /v /fo csv | ConvertFrom-Csv
 				#Filtering out all Windows tasks for Windows 2k3 and 2k12 (and 2k8?)
 				$ScheduledTasks = $Tasks | Where-Object { $_.HostName -eq $ComputerName `
-					-and $_.Author -ne "N/A" `
 					-and $_.'Next Run Time' -ne "N/A" `
 					-and $_.Author -notmatch "Microsoft" `
 					-and $_.TaskName -notmatch "User_Feed_Synchronization" `
+					-and $_.TaskName -notmatch "ShadowCopyVolume" `
 					} | sort-object {$_.name}
+				# -and $_.Author -ne "N/A" ` # <-- Not sure why this was a thing. Removed until it show up, then i will comment to remind me next time.:)
 				# -and $_.'Scheduled Task State' -ne "Disabled" # <-- Add this to the where-object selection in the line above to filter out disabled tasks as well
 				$Tasks = ""
 			}
@@ -912,14 +924,13 @@ If ($OutputWikiIndex) {
 				foreach ($user in $userlist){
 					itemStart
 					itemHeading $user.name
-					dataout "Description"  $user.description
+					dataout "Description" $user.description
 					itemEnd
 				}
 				sectionEnd
 			}
 
 			## Display server roles and features ##
-
 			if ($Roles) {
 				sectionHeading "Server Roles"
 				foreach ($role in $Roles){
@@ -944,7 +955,16 @@ If ($OutputWikiIndex) {
 				}
 				sectionEnd
 			}
-
+			
+			if ($NoRoleOrFeatureInfo -And ($IncludeRoles -Or $IncludeFeatures)) {
+				sectionHeading "Server Roles and Features"
+				itemstart
+				speak "There is no Role or Feature information available for this operating system." $FALSE
+				speak "System must be running Windows 8 and Server 2012 or later to gather this information." $FALSE
+				itemend
+				sectionEnd
+			}
+			
 			## Display installed software ##
 
 			if ($installedsoftware) {
@@ -1051,7 +1071,8 @@ If ($OutputWikiIndex) {
 					}
 					#This line can be removed if the filter excludes disabled tasks
 					If($ScheduledTask.'Scheduled Task State' -eq "Disabled") { $Tasktext = "Disabled" }
-					dataout "Info" $Tasktext
+					dataout "Schedule" $Tasktext
+					dataout "Run As User" $ScheduledTask.'Run As User'
 					itemEnd
 				}
 				sectionEnd
